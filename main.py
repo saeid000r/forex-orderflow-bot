@@ -2,37 +2,39 @@ import os
 import telebot
 import requests
 
-# خواندن توکن‌ها از بخش Secrets
-TOKEN = os.getenv('TELEGRAM_TOKEN')
+# دریافت توکن‌ها از Secrets
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+ACCESS_TOKEN = os.getenv('CTRADER_ACCESS_TOKEN')
+CLIENT_ID = os.getenv('CTRADER_CLIENT_ID')
+CLIENT_SECRET = os.getenv('CTRADER_CLIENT_SECRET')
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-def get_signal():
-    # شبیه‌ساز داده (اینجا بعداً به cTrader وصل می‌شود)
-    # فعلاً برای تست سلامت ربات، یک سیگنال فرضی می‌فرستیم
-    return {
-        "symbol": "XAUUSD",
-        "type": "BUY",
-        "price": "2042.50",
-        "imbalance": "48%"
-    }
-
-def run_bot():
+def get_ctrader_account_info():
+    # آدرس API برای دریافت لیست حساب‌ها
+    url = f"https://sandbox-tradeapi.ctrader.com/v2/symbols?oauth_token={ACCESS_TOKEN}"
+    # نکته: برای حساب واقعی آدرس متفاوت است، فعلاً برای تست لایه اتصال:
     try:
-        data = get_signal()
-        message = (
-            f"🔔 **سیگنال جدید Order Flow**\n\n"
-            f"💎 نماد: {data['symbol']}\n"
-            f"📈 نوع: {data['type']}\n"
-            f"💰 قیمت ورود: {data['price']}\n"
-            f"📊 قدرت فشار خرید: {data['imbalance']}\n"
-            f"🛡 وضعیت: تست اکانت جدید"
-        )
-        bot.send_message(CHAT_ID, message, parse_mode="Markdown")
-        print("Signal sent successfully!")
+        response = requests.get(url)
+        if response.status_code == 200:
+            return "✅ اتصال به cTrader برقرار شد!"
+        else:
+            return f"❌ خطا در اتصال: {response.status_code}"
     except Exception as e:
-        print(f"Error: {e}")
+        return f"⚠️ خطای سیستمی: {str(e)}"
+
+def run_task():
+    status_msg = get_ctrader_account_info()
+    
+    # پیام به تلگرام برای اطمینان از کارکرد صحیح
+    final_msg = (
+        f"🤖 **گزارش وضعیت ربات**\n\n"
+        f"📡 وضعیت اتصال: {status_msg}\n"
+        f"📊 نماد تحت نظر: XAUUSD (Gold)\n"
+        f"⏳ زمان چک بعدی: ۱۵ دقیقه دیگر"
+    )
+    bot.send_message(CHAT_ID, final_msg, parse_mode="Markdown")
 
 if __name__ == "__main__":
-    run_bot()
+    run_task()
