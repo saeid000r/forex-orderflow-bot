@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install Libraries
-        run: pip install python-telegram-bot requests pandas
+        run: pip install pyTelegramBotAPI requests pandas
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
