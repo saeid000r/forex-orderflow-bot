@@ -2,42 +2,26 @@ import os
 import sys
 import json
 import requests
-import importlib.util
 from twisted.internet import reactor
 
-# --- بخش اصلاح مسیر کتابخانه cTrader (حل مشکل ModuleNotFoundError) ---
+# --- بخش جادویی: وارد کردن مستقیم فایل‌های cTrader برای حل ارور ModuleNotFound ---
 try:
-    import ctrader_open_api
-    # پیدا کردن مسیر فیزیکی نصب کتابخانه
-    lib_path = os.path.dirname(ctrader_open_api.__file__)
-    msg_path = os.path.join(lib_path, "messages")
-    # اضافه کردن مسیر پیام‌ها به سیستم پایتون
-    if msg_path not in sys.path:
-        sys.path.append(msg_path)
-    
-    # لود کردن ماژول‌ها به صورت مستقیم
-    from ctrader_open_api.messages import (
-        ProtoOAApplicationAuthReq_pb2 as ProtoOAApplicationAuthReq,
-        ProtoOAAccountAuthReq_pb2 as ProtoOAAccountAuthReq,
-        ProtoOASymbolsListReq_pb2 as ProtoOASymbolsListReq,
-        ProtoOAGetDepthQuotesReq_pb2 as ProtoOAGetDepthQuotesReq
-    )
+    import ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 as PB_AppAuth
+    import ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 as PB_AccAuth
+    import ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 as PB_SymList
+    import ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 as PB_Depth
     from ctrader_open_api import Client, EndPoints, TcpProtocol
-    print("Library loaded successfully!")
-except Exception as e:
-    print(f"Direct Load Failed: {e}")
-    # تلاش مجدد با روش دوم
-    try:
-        from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
-        from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
-        from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
-        from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
-        from ctrader_open_api import Client, EndPoints, TcpProtocol
-    except Exception as e2:
-        print(f"All import methods failed: {e2}")
-        sys.exit(1)
 
-# --- تنظیمات ربات ---
+    ProtoOAApplicationAuthReq = PB_AppAuth.ProtoOAApplicationAuthReq
+    ProtoOAAccountAuthReq = PB_AccAuth.ProtoOAAccountAuthReq
+    ProtoOASymbolsListReq = PB_SymList.ProtoOASymbolsListReq
+    ProtoOAGetDepthQuotesReq = PB_Depth.ProtoOAGetDepthQuotesReq
+    print("Core modules loaded successfully!")
+except Exception as e:
+    print(f"Loading failed. Error: {e}")
+    sys.exit(1)
+
+# تنظیمات ربات
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 CLIENT_ID = os.getenv("CTRADER_CLIENT_ID")
@@ -48,7 +32,7 @@ ACCOUNT_ID = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 JOURNAL_FILE = "journal.json"
 TARGET_SYMBOLS = ["XAUUSD", "US30", "BRENT", "USNDAQ100", "EURUSD"]
 
-# استفاده از DEMO_HOST طبق ارور قبلی
+# استفاده از DEMO_HOST طبق ارور لایه قبل
 HOST = EndPoints.PROTOBUF_DEMO_HOST
 PORT = EndPoints.PROTOBUF_PORT
 
@@ -57,8 +41,7 @@ symbol_map, symbol_names, depth_results = {}, {}, {}
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-    try: requests.post(url, data=payload, timeout=10)
+    try: requests.post(url, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
     except: pass
 
 def load_journal():
@@ -99,6 +82,7 @@ def process_and_finish():
                 msg += f"Symbol: {sym_name}\nImbalance: {round(imbalance*100)}%\nPrice: {round(price,5)}"
                 send_telegram(msg)
 
+    # بررسی وضعیت سود یا ضرر (Journal)
     for s in journal["active"]:
         if s["symbol"] in current_prices:
             cp = current_prices[s["symbol"]]
@@ -112,23 +96,24 @@ def process_and_finish():
     
     journal["active"] = active_signals
     with open(JOURNAL_FILE, "w") as f: json.dump(journal, f, indent=4)
+    print("Scan Finished.")
     if reactor.running: reactor.stop()
 
 def on_connected(client):
-    print("Connected. Authenticating...")
-    req = ProtoOAApplicationAuthReq.ProtoOAApplicationAuthReq()
+    print("Connected. Authenticating Account...")
+    req = ProtoOAApplicationAuthReq()
     req.clientId = CLIENT_ID
     req.clientSecret = CLIENT_SECRET
     client.send(req).addCallback(lambda r: authenticate_account())
 
 def authenticate_account():
-    req = ProtoOAAccountAuthReq.ProtoOAAccountAuthReq()
+    req = ProtoOAAccountAuthReq()
     req.accessToken = ACCESS_TOKEN
     req.ctidTraderAccountId = ACCOUNT_ID
     client.send(req).addCallback(lambda r: get_symbols())
 
 def get_symbols():
-    req = ProtoOASymbolsListReq.ProtoOASymbolsListReq()
+    req = ProtoOASymbolsListReq()
     req.ctidTraderAccountId = ACCOUNT_ID
     client.send(req).addCallback(on_symbols_list)
 
@@ -139,12 +124,15 @@ def on_symbols_list(res):
             if t in name: 
                 symbol_map[t] = s.symbolId
                 symbol_names[s.symbolId] = s.symbolName
-    fetch_depths(list(symbol_map.values()))
+    if not symbol_map:
+        print("No matching symbols found."); process_and_finish()
+    else:
+        fetch_depths(list(symbol_map.values()))
 
 def fetch_depths(ids):
     if not ids: process_and_finish(); return
     sid = ids.pop(0)
-    req = ProtoOAGetDepthQuotesReq.ProtoOAGetDepthQuotesReq()
+    req = ProtoOAGetDepthQuotesReq()
     req.ctidTraderAccountId = ACCOUNT_ID
     req.symbolId = sid
     client.send(req).addCallback(lambda r: (depth_results.update({sid: r}), fetch_depths(ids))).addErrback(lambda e: fetch_depths(ids))
