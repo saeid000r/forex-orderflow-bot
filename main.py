@@ -1,20 +1,32 @@
 import os
 import json
 import requests
-from tradingview_ta import TA_Handler, Interval
+from twisted.internet import reactor
+from ctrader_open_api import Client, EndPoints, TcpProtocol
+from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
+from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
+from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
+from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
 
+# دریافت اطلاعات از سکرت‌های گیت‌هاب
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-JOURNAL_FILE = "journal.json"
+CLIENT_ID = os.getenv("CTRADER_CLIENT_ID")
+CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
+ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
+ACCOUNT_ID = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 
-# تنظیمات دقیق نمادهای زنده بازار در TradingView
-SYMBOLS_CONFIG = [
-    {"symbol": "XAUUSD", "screener": "forex", "exchange": "OANDA", "display": "XAUUSD"},
-    {"symbol": "US30", "screener": "america", "exchange": "CAPITALCOM", "display": "#US30"},
-    {"symbol": "UKOIL", "screener": "cfd", "exchange": "TVC", "display": "BRENT"},
-    {"symbol": "US100", "screener": "america", "exchange": "CAPITALCOM", "display": "#USNDAQ100"},
-    {"symbol": "EURUSD", "screener": "forex", "exchange": "FX_IDC", "display": "EURUSD"}
-]
+JOURNAL_FILE = "journal.json"
+TARGET_SYMBOLS = ["XAUUSD", "US30", "BRENT", "USNDAQ100", "EURUSD"]
+
+# اتصال به سرور cTrader (پروتکل Protobuf برای دریافت L2)
+HOST = os.getenv("CTRADER_HOST", EndPoints.PROTOBUF_SANDBOX_HOST)
+PORT = EndPoints.PROTOBUF_PORT
+
+client = Client(HOST, PORT, TcpProtocol)
+symbol_map = {}
+symbol_names = {}
+depth_results = {}
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -37,79 +49,78 @@ def save_journal(data):
     with open(JOURNAL_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-def main():
+def process_and_finish():
     journal = load_journal()
     new_signals = []
     active_signals = []
     current_prices = {}
 
-    # ۱. دریافت قیمت زنده از TradingView و محاسبه اوردر فلو
-    for item in SYMBOLS_CONFIG:
-        display_name = item["display"]
-        try:
-            handler = TA_Handler(
-                symbol=item["symbol"],
-                screener=item["screener"],
-                exchange=item["exchange"],
-                interval=Interval.INTERVAL_5_MINUTES
-            )
-            analysis = handler.get_analysis()
-            indicators = analysis.indicators
+    # ۱. پردازش دیتای لول ۲ (Level 2 Depth of Market)
+    for sym_id, depth in depth_results.items():
+        sym_name = symbol_names.get(sym_id, "")
+        if not sym_name: continue
 
-            close = indicators["close"]
-            high = indicators["high"]
-            low = indicators["low"]
+        bids = depth.bids
+        asks = depth.asks
 
-            current_prices[display_name] = close
+        if not bids or not asks:
+            continue
 
-            range_hl = high - low
-            if range_hl == 0:
-                continue
+        # محاسبه مجموع حجم سفارشات خرید و فروش در لول ۲
+        total_bid_vol = sum(b.volume for b in bids)
+        total_ask_vol = sum(a.volume for a in asks)
+        total_vol = total_bid_vol + total_ask_vol
 
-            # محاسبه میزان عدم تعادل عرضه و تقاضا (Order Flow Imbalance)
-            bull_power = close - low
-            bear_power = high - close
-            imbalance = (bull_power / range_hl) - (bear_power / range_hl)
+        if total_vol == 0: continue
 
-            signal_type = None
-            strength = ""
+        # محاسبه قیمت تعادلی لحظه‌ای
+        top_bid = bids[0].price / 100000.0 if bids[0].price > 100000 else bids[0].price
+        top_ask = asks[0].price / 100000.0 if asks[0].price > 100000 else asks[0].price
+        mid_price = (top_bid + top_ask) / 2.0
+        current_prices[sym_name] = mid_price
 
-            if imbalance >= 0.60:
-                signal_type = "BUY"
-                strength = "🔥 <b>Golden</b> 🔥"
-            elif imbalance >= 0.40:
-                signal_type = "BUY"
-                strength = "🟢 <b>Normal</b>"
-            elif imbalance <= -0.60:
-                signal_type = "SELL"
-                strength = "🔥 <b>Golden</b> 🔥"
-            elif imbalance <= -0.40:
-                signal_type = "SELL"
-                strength = "🔴 <b>Normal</b>"
+        # فرمول دقیق عدم تعادل اوردر فلو لول ۲
+        imbalance = (total_bid_vol - total_ask_vol) / total_vol
 
-            if signal_type:
-                entry = close
-                atr = range_hl if range_hl > 0 else entry * 0.001
+        signal_type = None
+        strength = ""
 
-                if signal_type == "BUY":
-                    tp = entry + (atr * 2.0)
-                    sl = entry - (atr * 1.0)
-                else:
-                    tp = entry - (atr * 2.0)
-                    sl = entry + (atr * 1.0)
+        if imbalance >= 0.60:
+            signal_type = "BUY"
+            strength = "🔥 <b>Golden (L2 Imbalance)</b> 🔥"
+        elif imbalance >= 0.40:
+            signal_type = "BUY"
+            strength = "🟢 <b>Normal (L2 Imbalance)</b>"
+        elif imbalance <= -0.60:
+            signal_type = "SELL"
+            strength = "🔥 <b>Golden (L2 Imbalance)</b> 🔥"
+        elif imbalance <= -0.40:
+            signal_type = "SELL"
+            strength = "🔴 <b>Normal (L2 Imbalance)</b>"
 
-                new_signals.append({
-                    "symbol": display_name,
-                    "type": signal_type,
-                    "strength": strength,
-                    "entry": round(entry, 4),
-                    "tp": round(tp, 4),
-                    "sl": round(sl, 4)
-                })
-        except Exception as e:
-            print(f"Error fetching {display_name}: {e}")
+        if signal_type:
+            spread = abs(top_ask - top_bid)
+            delta = spread * 4 if spread > 0 else mid_price * 0.001
+            entry = mid_price
 
-    # ۲. بررسی سیگنال‌های باز و ثبت سود/ضرر
+            if signal_type == "BUY":
+                tp = entry + (delta * 2.5)
+                sl = entry - (delta * 1.5)
+            else:
+                tp = entry - (delta * 2.5)
+                sl = entry + (delta * 1.5)
+
+            new_signals.append({
+                "symbol": sym_name,
+                "type": signal_type,
+                "strength": strength,
+                "entry": round(entry, 4),
+                "tp": round(tp, 4),
+                "sl": round(sl, 4),
+                "imbalance": round(imbalance * 100, 1)
+            })
+
+    # ۲. بررسی سیگنال‌های باز
     for sig in journal.get("active", []):
         sym = sig["symbol"]
         if sym not in current_prices:
@@ -120,47 +131,114 @@ def main():
         if sig["type"] == "BUY":
             if cp >= sig["tp"]:
                 journal["tp"] += 1
-                send_telegram(f"✅ <b>TP HIT! (سود شد)</b>\nSymbol: <b>{sym}</b>\nExit Price: {cp}")
+                send_telegram(f"✅ <b>TP HIT!</b>\nSymbol: <b>{sym}</b>\nPrice: {cp}")
             elif cp <= sig["sl"]:
                 journal["sl"] += 1
-                send_telegram(f"❌ <b>SL HIT! (ضرر شد)</b>\nSymbol: <b>{sym}</b>\nExit Price: {cp}")
+                send_telegram(f"❌ <b>SL HIT!</b>\nSymbol: <b>{sym}</b>\nPrice: {cp}")
             else:
                 active_signals.append(sig)
-        else:  # SELL
+        else:
             if cp <= sig["tp"]:
                 journal["tp"] += 1
-                send_telegram(f"✅ <b>TP HIT! (سود شد)</b>\nSymbol: <b>{sym}</b>\nExit Price: {cp}")
+                send_telegram(f"✅ <b>TP HIT!</b>\nSymbol: <b>{sym}</b>\nPrice: {cp}")
             elif cp >= sig["sl"]:
                 journal["sl"] += 1
-                send_telegram(f"❌ <b>SL HIT! (ضرر شد)</b>\nSymbol: <b>{sym}</b>\nExit Price: {cp}")
+                send_telegram(f"❌ <b>SL HIT!</b>\nSymbol: <b>{sym}</b>\nPrice: {cp}")
             else:
                 active_signals.append(sig)
 
     # ۳. ارسال سیگنال جدید به تلگرام
     for sig in new_signals:
-        is_duplicate = any(s["symbol"] == sig["symbol"] for s in active_signals)
-        if is_duplicate:
-            continue
+        is_dup = any(s["symbol"] == sig["symbol"] for s in active_signals)
+        if is_dup: continue
 
         active_signals.append(sig)
         journal["total"] += 1
 
-        closed_trades = journal["tp"] + journal["sl"]
-        wr = (journal["tp"] / closed_trades * 100) if closed_trades > 0 else 0.0
+        closed = journal["tp"] + journal["sl"]
+        wr = (journal["tp"] / closed * 100) if closed > 0 else 0.0
 
         msg = f"{sig['strength']} SIGNAL\n\n"
         msg += f"Symbol: <b>{sig['symbol']}</b>\n"
         msg += f"Action: <b>{sig['type']}</b>\n"
+        msg += f"L2 Imbalance: <b>{sig['imbalance']}%</b>\n"
         msg += f"Entry: <code>{sig['entry']}</code>\n"
         msg += f"TP: <code>{sig['tp']}</code>\n"
         msg += f"SL: <code>{sig['sl']}</code>\n\n"
-        msg += f"📊 Win Rate: <b>{wr:.1f}%</b> (Trades: {closed_trades})"
+        msg += f"📊 Win Rate: <b>{wr:.1f}%</b> (Trades: {closed})"
 
         send_telegram(msg)
 
     journal["active"] = active_signals
     save_journal(journal)
-    print("Scan finished successfully.")
+    print("cTrader L2 Scan Completed.")
+    if reactor.running:
+        reactor.stop()
+
+# فرایند اتصال به cTrader Protobuf API
+def on_connected(client):
+    print("Connected to cTrader Protobuf API...")
+    req = ProtoOAApplicationAuthReq()
+    req.clientId = CLIENT_ID
+    req.clientSecret = CLIENT_SECRET
+    d = client.send(req)
+    d.addCallback(on_app_auth)
+    d.addErrback(on_error)
+
+def on_app_auth(response):
+    req = ProtoOAAccountAuthReq()
+    req.accessToken = ACCESS_TOKEN
+    req.ctidTraderAccountId = ACCOUNT_ID
+    d = client.send(req)
+    d.addCallback(on_account_auth)
+    d.addErrback(on_error)
+
+def on_account_auth(response):
+    req = ProtoOASymbolsListReq()
+    req.ctidTraderAccountId = ACCOUNT_ID
+    d = client.send(req)
+    d.addCallback(on_symbols_list)
+    d.addErrback(on_error)
+
+def on_symbols_list(response):
+    for symbol in response.symbol:
+        clean_name = symbol.symbolName.replace("#", "")
+        for target in TARGET_SYMBOLS:
+            if target in clean_name:
+                symbol_map[target] = symbol.symbolId
+                symbol_names[symbol.symbolId] = symbol.symbolName
+
+    if not symbol_map:
+        print("No matching symbols found on cTrader.")
+        process_and_finish()
+        return
+
+    fetch_depth_quotes(list(symbol_map.values()))
+
+def fetch_depth_quotes(symbol_ids):
+    if not symbol_ids:
+        process_and_finish()
+        return
+
+    sym_id = symbol_ids.pop(0)
+    req = ProtoOAGetDepthQuotesReq()
+    req.ctidTraderAccountId = ACCOUNT_ID
+    req.symbolId = sym_id
+
+    d = client.send(req)
+    def on_depth(res):
+        depth_results[sym_id] = res
+        fetch_depth_quotes(symbol_ids)
+
+    d.addCallback(on_depth)
+    d.addErrback(lambda err: fetch_depth_quotes(symbol_ids))
+
+def on_error(failure):
+    print(f"cTrader Error: {failure}")
+    if reactor.running:
+        reactor.stop()
 
 if __name__ == "__main__":
-    main()
+    client.setConnectedCallback(on_connected)
+    client.startService()
+    reactor.run()
