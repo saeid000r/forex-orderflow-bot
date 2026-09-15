@@ -1,5 +1,5 @@
 requests
-ctrader-open-api==0.9.2
-protobuf==3.20.1
 twisted
 service_identity
+ctrader-open-api==0.9.2
+protobuf==3.20.1
