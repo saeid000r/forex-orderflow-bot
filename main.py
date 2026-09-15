@@ -17,11 +17,14 @@ cTrader Level-2 Order-Flow Bot — نسخه اصلاح‌شده (سازگار ب
   4) symbolId در درخواست‌ها repeated است و باید با extend پر شود، نه انتساب مستقیم
   5) قیمت: مقیاس قیمت در Open API همیشه ثابت 100000 است (اثبات‌شده با دیتای واقعی بازار)؛
      digits فقط تعداد ارقام اعشار نمایشی است، نه مقیاس!
+  6) نسخه ۲ (فیکس پایداری): رفرش توکن فقط روی ارورهای واقعاً مربوط به توکن انجام می‌شود
+     (رفرش بی‌جا توکن سالم را باطل می‌کرد!) + پیام تمدید شامل هر دو توکن + ضداسپم پیام خطا.
 """
 
 import os
 import sys
 import json
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -61,6 +64,7 @@ CTRADER_HOST = env("CTRADER_HOST") or "demo.ctraderapi.com"
 CTRADER_PORT = env_int("CTRADER_PORT", 5035)
 COLLECT_SECONDS = env_int("COLLECT_SECONDS", 15)     # مدت جمع‌آوری دیتای L2
 FAILSAFE_SECONDS = env_int("FAILSAFE_SECONDS", 100)  # سقف امنیتی کل اجرا
+ERROR_COOLDOWN_SECONDS = env_int("ERROR_COOLDOWN_SECONDS", 3600)  # ضداسپم پیام خطای تکراری
 
 JOURNAL_FILE = "journal.json"
 
@@ -172,6 +176,42 @@ def fmt_price(price, decimals):
     return f"{price:.{decimals}f}"
 
 
+def is_token_error(fail):
+    """آیا این خطا واقعاً مربوط به توکن است؟ فقط در این صورت رفرش مجاز است.
+
+    نکته مهم: رفرش کردن روی ارورهای غیرتوکن (مثل مشکل حساب)، توکن سالم را
+    باطل و رفرش‌توکن را می‌سوزاند و قطعی موقت را دائمی می‌کند!
+    """
+    try:
+        msg = (fail.getErrorMessage() or "").lower()
+    except Exception:
+        return False
+    hints = (
+        "access_token_invalid",
+        "access token",
+        "invalid token",
+        "token expired",
+        "token_expired",
+        "expired token",
+        "unauthorized",
+        "unauthorised",
+    )
+    return any(h in msg for h in hints)
+
+
+def should_send_error(journal, err_text):
+    """ضداسپم: ارور تکراری فقط بعد از cooldown دوباره به تلگرام ارسال می‌شود."""
+    now = time.time()
+    short = (err_text or "")[:300]
+    last_t = journal.get("last_error_ts", 0)
+    last_e = journal.get("last_error_text", "")
+    if short != last_e or (now - last_t) >= ERROR_COOLDOWN_SECONDS:
+        journal["last_error_ts"] = now
+        journal["last_error_text"] = short
+        return True
+    return False
+
+
 # ---------------------------------------------------------------- لایه cTrader
 def api_send(req, timeout=10):
     """ارسال درخواست و باز کردن پاسخTyped با Protobuf.extract."""
@@ -262,7 +302,11 @@ def send_account_auth(attempt=1):
 
 
 def try_refresh_then_retry(fail):
-    log(f"⚠️ Account auth failed: {fail.getErrorMessage()} — تلاش برای تمدید توکن...")
+    # فقط اگر ارور واقعاً مربوط به توکن است رفرش کن؛ وگرنه توکن سالم می‌سوزد!
+    if not is_token_error(fail):
+        log("⏭️ این خطا مربوط به توکن نیست؛ رفرش انجام نشد تا توکن‌های سالم باطل نشوند.")
+        return fail
+    log(f"⚠️ Account auth failed (token): {fail.getErrorMessage()} — تلاش برای تمدید توکن...")
     d2 = threads.deferToThread(try_refresh_token)
 
     def after_refresh(new):
@@ -271,10 +315,12 @@ def try_refresh_then_retry(fail):
             log("✅ توکن با موفقیت تمدید شد؛ تلاش مجدد برای احراز هویت...")
             send_telegram(
                 "⚠️ <b>توکن cTrader منقضی شده بود و خودکار تمدید شد.</b>\n"
-                "برای اجراهای بعدی حتماً سکرت‌های گیت‌هاب را به‌روز کنید:\n"
-                "<code>CTRADER_ACCESS_TOKEN</code> و <code>CTRADER_REFRESH_TOKEN</code>\n\n"
-                "توکن جدید رفرش (فقط همین یک‌بار نمایش داده می‌شود):\n"
-                f"<code>{new[1] or '—'}</code>"
+                "این ران با توکن جدید ادامه پیدا کرد. برای ران‌های بعدی، هر دو سکرت را به‌روز کنید:\n\n"
+                "CTRADER_ACCESS_TOKEN:\n"
+                f"<code>{new[0]}</code>\n\n"
+                "CTRADER_REFRESH_TOKEN:\n"
+                f"<code>{new[1] or '—'}</code>\n\n"
+                "⚠️ این پیام حاوی توکن است؛ بعد از کپی، آن را از تلگرام پاک کنید."
             )
             return send_account_auth(attempt=2)
         log("❌ تمدید توکن ناموفق بود.")
@@ -514,16 +560,23 @@ def on_fatal(fail):
     exit_code = 1
     err = fail.getErrorMessage()
     log(f"❌ اجرای بات ناموفق بود: {err}\n{fail.getTraceback()}")
+    journal = load_journal()
     try:
-        save_journal(load_journal())
+        if should_send_error(journal, err):
+            send_telegram(
+                "❌ <b>خطا در اجرای بات cTrader</b>\n"
+                f"<code>{err[:300]}</code>\n"
+                "لاگ کامل را در تب Actions گیت‌هاب ببینید.\n"
+                "اگر حسابتان Live است، سکرت <code>CTRADER_HOST=live.ctraderapi.com</code> را چک کنید."
+            )
+        else:
+            log("🔕 خطای تکراری؛ پیام تلگرام ارسال نشد (ضداسپم).")
     except Exception:
         pass
-    send_telegram(
-        "❌ <b>خطا در اجرای بات cTrader</b>\n"
-        f"<code>{err[:300]}</code>\n"
-        "لاگ کامل را در تب Actions گیت‌هاب ببینید.\n"
-        "اگر حسابتان Live است، سکرت <code>CTRADER_HOST=live.ctraderapi.com</code> را چک کنید."
-    )
+    try:
+        save_journal(journal)
+    except Exception:
+        pass
     try:
         reactor.stop()
     except Exception:
@@ -537,14 +590,21 @@ def failsafe():
     finished = True
     exit_code = 1
     log(f"⏰ تایم‌اوت امنیتی ({FAILSAFE_SECONDS}s)؛ اتصال به cTrader برقرار/کامل نشد.")
+    journal = load_journal()
     try:
-        save_journal(load_journal())
+        if should_send_error(journal, "TIMEOUT"):
+            send_telegram(
+                "⏰ <b>تایم‌اوت بات cTrader</b>\n"
+                "اتصال به سرور cTrader کامل نشد. اینترنت/هاست/توکن‌ها را چک کنید."
+            )
+        else:
+            log("🔕 خطای تکراری؛ پیام تلگرام ارسال نشد (ضداسپم).")
     except Exception:
         pass
-    send_telegram(
-        "⏰ <b>تایم‌اوت بات cTrader</b>\n"
-        "اتصال به سرور cTrader کامل نشد. اینترنت/هاست/توکن‌ها را چک کنید."
-    )
+    try:
+        save_journal(journal)
+    except Exception:
+        pass
     try:
         reactor.stop()
     except Exception:
