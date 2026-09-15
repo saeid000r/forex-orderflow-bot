@@ -1,8 +1,11 @@
 name: Forex Signal Bot
 on:
   schedule:
-    - cron: '*/15 * * * *' # هر ۱۵ دقیقه خودکار اجرا می‌شود
-  workflow_dispatch: # امکان اجرای دستی با دکمه
+    - cron: '*/5 * * * *' # هر ۵ دقیقه یک‌بار اجرا می‌شود
+  workflow_dispatch: # امکان اجرای دستی (گزارش لحظه‌ای)
+
+permissions:
+  contents: write # اجازه ذخیره دیتابیس در گیت‌هاب
 
 jobs:
   build:
@@ -28,3 +31,11 @@ jobs:
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
         run: python main.py
+
+      - name: Save Database Changes
+        run: |
+          git config --local user.email "bot@github.com"
+          git config --local user.name "Journal Bot"
+          git add journal.json
+          git commit -m "Update trade journal" || exit 0
+          git push
