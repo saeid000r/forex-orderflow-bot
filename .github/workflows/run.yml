@@ -1,41 +1,38 @@
-name: Forex Signal Bot
+name: Forex 24/7 Bot
+
 on:
   schedule:
-    - cron: '*/5 * * * *' # هر ۵ دقیقه یک‌بار اجرا می‌شود
-  workflow_dispatch: # امکان اجرای دستی (گزارش لحظه‌ای)
-
-permissions:
-  contents: write # اجازه ذخیره دیتابیس در گیت‌هاب
+    - cron: '*/5 * * * 1-5' # اجرا هر ۵ دقیقه (دوشنبه تا جمعه - روزهای کاری بازار)
+  workflow_dispatch: # دکمه اجرای دستی
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # اجازه نوشتن ژورنال در مخزن
+
     steps:
-      - name: Copy Code
-        uses: actions/checkout@v2
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v2
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
-      - name: Install Libraries
-        run: pip install pyTelegramBotAPI requests pandas
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
 
-      - name: Run Bot
+      - name: Run Trading Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
-          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
-          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
-          CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
         run: python main.py
 
-      - name: Save Database Changes
+      - name: Save Journal (Commit changes)
         run: |
-          git config --local user.email "bot@github.com"
-          git config --local user.name "Journal Bot"
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
           git add journal.json
-          git commit -m "Update trade journal" || exit 0
-          git push
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update trading journal" && git push)
