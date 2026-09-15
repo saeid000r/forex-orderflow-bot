@@ -1,6 +1,39 @@
 {
-    "total": 0,
+    "total": 4,
     "tp": 0,
     "sl": 0,
-    "active": []
+    "active": [
+        {
+            "symbol": "#US30",
+            "type": "SELL",
+            "strength": "\ud83d\udd25 <b>Golden</b> \ud83d\udd25",
+            "entry": 52421.5703,
+            "tp": 52336.4434,
+            "sl": 52472.6465
+        },
+        {
+            "symbol": "BRENT",
+            "type": "SELL",
+            "strength": "\ud83d\udd25 <b>Golden</b> \ud83d\udd25",
+            "entry": 106.66,
+            "tp": 105.91,
+            "sl": 107.11
+        },
+        {
+            "symbol": "#USNDAQ100",
+            "type": "SELL",
+            "strength": "\ud83d\udd25 <b>Golden</b> \ud83d\udd25",
+            "entry": 29131.4414,
+            "tp": 29046.8662,
+            "sl": 29182.1865
+        },
+        {
+            "symbol": "EURUSD",
+            "type": "SELL",
+            "strength": "\ud83d\udd25 <b>Golden</b> \ud83d\udd25",
+            "entry": 1.1541,
+            "tp": 1.1537,
+            "sl": 1.1543
+        }
+    ]
 }
