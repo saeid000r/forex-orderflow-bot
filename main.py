@@ -1,13 +1,46 @@
 import os
 import json
 import requests
+import sys
+import importlib
 from twisted.internet import reactor
 from ctrader_open_api import Client, EndPoints, TcpProtocol
 
-from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
-from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
-from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
-from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
+# سیستم چندمسیره هوشمند برای لود کردن ماژول‌های cTrader
+def get_ctrader_message(msg_name):
+    possible_paths = [
+        f"ctrader_open_api.messages.{msg_name}_pb2",
+        f"ctrader_open_api.messages.{msg_name}",
+        "ctrader_open_api.messages",
+        f"ctrader_open_api.{msg_name}_pb2",
+        f"ctrader_open_api.{msg_name}"
+    ]
+    for path in possible_paths:
+        try:
+            mod = importlib.import_module(path)
+            if hasattr(mod, msg_name):
+                return getattr(mod, msg_name)
+        except Exception:
+            continue
+    return None
+
+# دریافت کلاس‌های پیام cTrader
+ProtoOAApplicationAuthReq = get_ctrader_message("ProtoOAApplicationAuthReq")
+ProtoOAAccountAuthReq = get_ctrader_message("ProtoOAAccountAuthReq")
+ProtoOASymbolsListReq = get_ctrader_message("ProtoOASymbolsListReq")
+ProtoOAGetDepthQuotesReq = get_ctrader_message("ProtoOAGetDepthQuotesReq")
+
+# بررسی صحت بارگذاری
+if not ProtoOAApplicationAuthReq:
+    try:
+        import ctrader_open_api.messages as msgs
+        ProtoOAApplicationAuthReq = getattr(msgs, "ProtoOAApplicationAuthReq", None)
+        ProtoOAAccountAuthReq = getattr(msgs, "ProtoOAAccountAuthReq", None)
+        ProtoOASymbolsListReq = getattr(msgs, "ProtoOASymbolsListReq", None)
+        ProtoOAGetDepthQuotesReq = getattr(msgs, "ProtoOAGetDepthQuotesReq", None)
+    except Exception as e:
+        print(f"Failed to load cTrader modules: {e}")
+        sys.exit(1)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
