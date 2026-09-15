@@ -1,2 +1,3 @@
 requests
-tradingview-ta
+ctrader-open-api
+twisted
