@@ -27,6 +27,7 @@ jobs:
 
       - name: Run cTrader L2 Bot
         env:
+          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
