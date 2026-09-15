@@ -1,8 +1,8 @@
 name: Forex Signal Bot
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *' # هر ۱۵ دقیقه خودکار اجرا می‌شود
+  workflow_dispatch: # امکان اجرای دستی با دکمه
 
 jobs:
   build:
@@ -10,17 +10,21 @@ jobs:
     steps:
       - name: Copy Code
         uses: actions/checkout@v2
+
       - name: Setup Python
         uses: actions/setup-python@v2
         with:
           python-version: '3.9'
+
       - name: Install Libraries
         run: pip install pyTelegramBotAPI requests pandas
+
       - name: Run Bot
-                env:
+        env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
           CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
           CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
           CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
+        run: python main.py
