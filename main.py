@@ -3,12 +3,29 @@ import json
 import requests
 from twisted.internet import reactor
 from ctrader_open_api import Client, EndPoints, TcpProtocol
-from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
-from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
-from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
-from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
 
-# دریافت اطلاعات از سکرت‌های گیت‌هاب
+# هندل کردن هوشمند ماژول‌های cTrader جهت جلوگیری از ModuleNotFoundError
+try:
+    from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
+    from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
+    from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
+    from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
+except (ImportError, ModuleNotFoundError):
+    try:
+        from ctrader_open_api.messages import (
+            ProtoOAApplicationAuthReq,
+            ProtoOAAccountAuthReq,
+            ProtoOASymbolsListReq,
+            ProtoOAGetDepthQuotesReq
+        )
+    except Exception:
+        import ctrader_open_api.messages as msg_mod
+        ProtoOAApplicationAuthReq = getattr(msg_mod, "ProtoOAApplicationAuthReq", None)
+        ProtoOAAccountAuthReq = getattr(msg_mod, "ProtoOAAccountAuthReq", None)
+        ProtoOASymbolsListReq = getattr(msg_mod, "ProtoOASymbolsListReq", None)
+        ProtoOAGetDepthQuotesReq = getattr(msg_mod, "ProtoOAGetDepthQuotesReq", None)
+
+# دریافت سکرت‌ها از گیت‌هاب
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 CLIENT_ID = os.getenv("CTRADER_CLIENT_ID")
@@ -19,8 +36,7 @@ ACCOUNT_ID = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 JOURNAL_FILE = "journal.json"
 TARGET_SYMBOLS = ["XAUUSD", "US30", "BRENT", "USNDAQ100", "EURUSD"]
 
-# اتصال به سرور cTrader (پروتکل Protobuf برای دریافت L2)
-HOST = os.getenv("CTRADER_HOST", EndPoints.PROTOBUF_SANDBOX_HOST)
+HOST = EndPoints.PROTOBUF_SANDBOX_HOST
 PORT = EndPoints.PROTOBUF_PORT
 
 client = Client(HOST, PORT, TcpProtocol)
@@ -55,7 +71,6 @@ def process_and_finish():
     active_signals = []
     current_prices = {}
 
-    # ۱. پردازش دیتای لول ۲ (Level 2 Depth of Market)
     for sym_id, depth in depth_results.items():
         sym_name = symbol_names.get(sym_id, "")
         if not sym_name: continue
@@ -66,20 +81,18 @@ def process_and_finish():
         if not bids or not asks:
             continue
 
-        # محاسبه مجموع حجم سفارشات خرید و فروش در لول ۲
         total_bid_vol = sum(b.volume for b in bids)
         total_ask_vol = sum(a.volume for a in asks)
         total_vol = total_bid_vol + total_ask_vol
 
         if total_vol == 0: continue
 
-        # محاسبه قیمت تعادلی لحظه‌ای
         top_bid = bids[0].price / 100000.0 if bids[0].price > 100000 else bids[0].price
         top_ask = asks[0].price / 100000.0 if asks[0].price > 100000 else asks[0].price
         mid_price = (top_bid + top_ask) / 2.0
         current_prices[sym_name] = mid_price
 
-        # فرمول دقیق عدم تعادل اوردر فلو لول ۲
+        # محاسبه عدم تعادل لول ۲ سفارشات
         imbalance = (total_bid_vol - total_ask_vol) / total_vol
 
         signal_type = None
@@ -87,16 +100,16 @@ def process_and_finish():
 
         if imbalance >= 0.60:
             signal_type = "BUY"
-            strength = "🔥 <b>Golden (L2 Imbalance)</b> 🔥"
+            strength = "🔥 <b>Golden (cTrader L2)</b> 🔥"
         elif imbalance >= 0.40:
             signal_type = "BUY"
-            strength = "🟢 <b>Normal (L2 Imbalance)</b>"
+            strength = "🟢 <b>Normal (cTrader L2)</b>"
         elif imbalance <= -0.60:
             signal_type = "SELL"
-            strength = "🔥 <b>Golden (L2 Imbalance)</b> 🔥"
+            strength = "🔥 <b>Golden (cTrader L2)</b> 🔥"
         elif imbalance <= -0.40:
             signal_type = "SELL"
-            strength = "🔴 <b>Normal (L2 Imbalance)</b>"
+            strength = "🔴 <b>Normal (cTrader L2)</b>"
 
         if signal_type:
             spread = abs(top_ask - top_bid)
@@ -120,7 +133,6 @@ def process_and_finish():
                 "imbalance": round(imbalance * 100, 1)
             })
 
-    # ۲. بررسی سیگنال‌های باز
     for sig in journal.get("active", []):
         sym = sig["symbol"]
         if sym not in current_prices:
@@ -147,7 +159,6 @@ def process_and_finish():
             else:
                 active_signals.append(sig)
 
-    # ۳. ارسال سیگنال جدید به تلگرام
     for sig in new_signals:
         is_dup = any(s["symbol"] == sig["symbol"] for s in active_signals)
         if is_dup: continue
@@ -175,7 +186,6 @@ def process_and_finish():
     if reactor.running:
         reactor.stop()
 
-# فرایند اتصال به cTrader Protobuf API
 def on_connected(client):
     print("Connected to cTrader Protobuf API...")
     req = ProtoOAApplicationAuthReq()
