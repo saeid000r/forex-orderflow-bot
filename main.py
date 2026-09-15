@@ -15,7 +15,8 @@ cTrader Level-2 Order-Flow Bot — نسخه اصلاح‌شده (سازگار ب
   2) استفاده از ProtoOAGetDepthQuotesReq که اصلاً وجود ندارد → جایگزین با Subscribe + رویداد DepthEvent
   3) پاسخ‌ها به صورت ProtoMessage خام می‌آیند و باید با Protobuf.extract باز شوند
   4) symbolId در درخواست‌ها repeated است و باید با extend پر شود، نه انتساب مستقیم
-  5) قیمت‌ها باید با digits واقعی هر سیمبل (از SymbolById) نرمال شوند، نه تقسیم ثابت بر ۱۰۰۰۰۰
+  5) قیمت: مقیاس قیمت در Open API همیشه ثابت 100000 است (اثبات‌شده با دیتای واقعی بازار)؛
+     digits فقط تعداد ارقام اعشار نمایشی است، نه مقیاس!
 """
 
 import os
@@ -63,6 +64,9 @@ FAILSAFE_SECONDS = env_int("FAILSAFE_SECONDS", 100)  # سقف امنیتی کل 
 
 JOURNAL_FILE = "journal.json"
 
+# مقیاس ثابت قیمت در cTrader Open API (با مقایسه با قیمت واقعی بازار تایید شد)
+PRICE_SCALE = 100000
+
 # سیمبل‌های هدف + نام‌های جایگزین رایج در بروکرهای مختلف
 TARGETS = {
     "XAUUSD": ["XAUUSD", "GOLD"],
@@ -91,7 +95,7 @@ ACCOUNT_ID = 0
 
 symbol_ids = {}    # target -> symbolId
 id_to_target = {}  # symbolId -> target
-digits_map = {}    # symbolId -> digits
+digits_map = {}    # symbolId -> digits (فقط برای تعداد ارقام اعشار نمایشی)
 book = {}          # symbolId -> {quoteId: (side, size, priceRaw)}
 spots = {}         # symbolId -> (bidRaw, askRaw)
 
@@ -162,6 +166,10 @@ def fmt_vol(units):
     if units >= 1_000:
         return f"{units / 1e3:.1f}K"
     return f"{units:.0f}"
+
+
+def fmt_price(price, decimals):
+    return f"{price:.{decimals}f}"
 
 
 # ---------------------------------------------------------------- لایه cTrader
@@ -311,7 +319,7 @@ def on_symbols_list(res):
 
 
 def fetch_digits():
-    """گرفتن digits هر سیمبل برای محاسبه درست قیمت."""
+    """گرفتن digits هر سیمبل برای تعداد ارقام اعشار نمایشی."""
     req = Msg.ProtoOASymbolByIdReq()
     req.ctidTraderAccountId = ACCOUNT_ID
     req.symbolId.extend(list(symbol_ids.values()))
@@ -371,18 +379,17 @@ def analyze_symbol(target, sym_id):
         return None
 
     imbalance = (bid_vol - ask_vol) / total
-    digits = digits_map.get(sym_id, FALLBACK_DIGITS.get(target, 5))
-    scale = 10 ** digits
+    decimals = digits_map.get(sym_id, FALLBACK_DIGITS.get(target, 5))
 
     price = None
     if sym_id in spots and spots[sym_id][0] and spots[sym_id][1]:
         b, a = spots[sym_id]
-        price = ((b + a) / 2.0) / scale
+        price = ((b + a) / 2.0) / PRICE_SCALE
     else:
         bids = [p for (s, _, p) in order_book.values() if s == "bid"]
         asks = [p for (s, _, p) in order_book.values() if s == "ask"]
         if bids and asks:
-            price = ((max(bids) + min(asks)) / 2.0) / scale
+            price = ((max(bids) + min(asks)) / 2.0) / PRICE_SCALE
     if price is None or price <= 0:
         return None
 
@@ -398,6 +405,7 @@ def analyze_symbol(target, sym_id):
         "signal": signal,
         "golden": abs(imbalance) > GOLD_THRESHOLD,
         "price": price,
+        "decimals": decimals,
         "bid_vol": bid_vol / 100.0,   # size بر حسب سنت است
         "ask_vol": ask_vol / 100.0,
         "levels": len(order_book),
@@ -420,10 +428,11 @@ def finish():
                 log(f"⏭️ {target}: دیتای L2 نرسید (مارکت بسته است یا بروکر DOM نمی‌دهد).")
                 continue
             current_prices[target] = result["price"]
+            dec = result["decimals"]
             log(
                 f"📊 {target}: imb={result['imbalance']*100:+.0f}% "
                 f"bid={fmt_vol(result['bid_vol'])} ask={fmt_vol(result['ask_vol'])} "
-                f"levels={result['levels']} price={result['price']}"
+                f"levels={result['levels']} price={fmt_price(result['price'], dec)}"
             )
 
             if not result["signal"]:
@@ -444,9 +453,10 @@ def finish():
             journal["active"].append({
                 "symbol": target,
                 "type": sig,
-                "entry": round(price, 5),
-                "tp": round(tp, 5),
-                "sl": round(sl, 5),
+                "entry": round(price, dec),
+                "tp": round(tp, dec),
+                "sl": round(sl, dec),
+                "decimals": dec,
                 "imbalance": round(result["imbalance"] * 100, 1),
                 "time": now_iso(),
             })
@@ -459,8 +469,8 @@ def finish():
                 f"Symbol: <b>{target}</b>\n"
                 f"L2 Imbalance: <code>{result['imbalance']*100:+.0f}%</code> "
                 f"(Bid {fmt_vol(result['bid_vol'])} / Ask {fmt_vol(result['ask_vol'])})\n"
-                f"Entry: <code>{price:.5f}</code>\n"
-                f"TP: <code>{tp:.5f}</code> | SL: <code>{sl:.5f}</code>"
+                f"Entry: <code>{fmt_price(price, dec)}</code>\n"
+                f"TP: <code>{fmt_price(tp, dec)}</code> | SL: <code>{fmt_price(sl, dec)}</code>"
             )
 
         # بررسی پوزیشن‌های باز قبلی با قیمت‌های فعلی
@@ -470,14 +480,15 @@ def finish():
             if cp is None:
                 still_active.append(s)
                 continue
+            sdec = s.get("decimals", 5)
             hit_tp = (s["type"] == "BUY" and cp >= s["tp"]) or (s["type"] == "SELL" and cp <= s["tp"])
             hit_sl = (s["type"] == "BUY" and cp <= s["sl"]) or (s["type"] == "SELL" and cp >= s["sl"])
             if hit_tp:
                 journal["tp"] += 1
-                send_telegram(f"✅ <b>TP HIT</b>: {s['symbol']} {s['type']} @ {cp:.5f}\nWinRate: {win_rate_text(journal)}")
+                send_telegram(f"✅ <b>TP HIT</b>: {s['symbol']} {s['type']} @ {fmt_price(cp, sdec)}\nWinRate: {win_rate_text(journal)}")
             elif hit_sl:
                 journal["sl"] += 1
-                send_telegram(f"❌ <b>SL HIT</b>: {s['symbol']} {s['type']} @ {cp:.5f}\nWinRate: {win_rate_text(journal)}")
+                send_telegram(f"❌ <b>SL HIT</b>: {s['symbol']} {s['type']} @ {fmt_price(cp, sdec)}\nWinRate: {win_rate_text(journal)}")
             else:
                 still_active.append(s)
 
