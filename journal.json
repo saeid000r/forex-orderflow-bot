@@ -1,5 +1,6 @@
 {
-  "total_signals": 8,
-  "tp_hits": 8,
-  "sl_hits": 0
+    "total": 0,
+    "tp": 0,
+    "sl": 0,
+    "active": []
 }
