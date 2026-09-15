@@ -2,14 +2,18 @@ import os
 import json
 import telebot
 import requests
-import random
+import time
 
 # تنظیمات از Secrets
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+ACCESS_TOKEN = os.getenv('CTRADER_ACCESS_TOKEN')
+ACCOUNT_ID = os.getenv('CTRADER_ACCOUNT_ID')
+
 bot = telebot.TeleBot(TOKEN)
 
-SYMBOLS = {
+# لیست دقیق نمادها طبق تصویر سی‌تریدر شما
+SYMBOL_MAP = {
     "XAUUSD": "طلا 🟡",
     "#US30": "داوجونز 🏦",
     "WTI": "نفت 🛢",
@@ -28,66 +32,67 @@ def save_journal(data):
     with open("journal.json", "w") as f:
         json.dump(data, f, indent=2)
 
-def get_live_imbalance(symbol):
-    # تولید عدد تصادفی برای تست (در دیتای زنده دوشنبه جایگزین می‌شود)
-    buy_vol = random.randint(30, 95)
-    sell_vol = 100 - buy_vol
-    imbalance = (buy_vol - sell_vol) / 100
-    return buy_vol, sell_vol, imbalance
+def get_live_data(symbol_name):
+    """دریافت دیتای واقعی از سرور لایو سی‌تریدر"""
+    try:
+        # ۱. پیدا کردن شناسه عددی نماد
+        search_url = f"https://live.ctraderapi.com/v2/symbols?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}"
+        response = requests.get(search_url).json()
+        
+        target_id = None
+        for s in response['symbol']:
+            if s['symbolName'] == symbol_name:
+                target_id = s['symbolId']
+                break
+        
+        if not target_id: return None
+
+        # ۲. دریافت آخرین کندل برای تحلیل فشار خرید و فروش
+        bars_url = f"https://live.ctraderapi.com/v2/symbols/{target_id}/trendbars?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}&period=M1&from={int(time.time()-120)*1000}&to={int(time.time())*1000}"
+        bar = requests.get(bars_url).json()['trendbar'][-1]
+        
+        price = float(bar['close'])
+        high, low, close = float(bar['high']), float(bar['low']), float(bar['close'])
+        
+        # محاسبه شدت نوسان و فشار (Imbalance)
+        rng = (high - low) if high != low else 0.0001
+        bull = (close - low) / rng
+        bear = (high - close) / rng
+        imbalance = bull - bear
+        
+        return {"price": price, "imbalance": imbalance, "buy": int(bull*100), "sell": int(bear*100)}
+    except:
+        return None
 
 def run_bot():
     journal = load_journal()
-    bot.send_message(CHAT_ID, "🔎 **اسکن لایه ۲ بازار (قدرت سیگنال)...**", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, "🔎 **در حال اسکن بازار واقعی (Live)...**", parse_mode="Markdown")
 
-    for sym_code, sym_name in SYMBOLS.items():
-        buy_p, sell_p, imbalance = get_live_imbalance(sym_code)
-        price = 2508.50 if "XAU" in sym_code else 1.0850 # قیمت حدودی طلا در حال حاضر
+    for sym_code, sym_name in SYMBOL_MAP.items():
+        data = get_live_data(sym_code)
         
-        abs_imbalance = abs(imbalance)
-
-        # فقط اگر قدرت بالای ۴۰٪ بود سیگنال بده
-        if abs_imbalance > 0.40:
+        if data and abs(data['imbalance']) > 0.40:
             journal["total_signals"] += 1
+            side = "BUY 🟢" if data['imbalance'] > 0 else "SELL 🔴"
+            strength = "طلایی 🔥⭐⭐⭐" if abs(data['imbalance']) > 0.60 else "معمولی ⚠️⭐"
             
-            # تعیین قدرت سیگنال
-            if abs_imbalance > 0.60:
-                strength = "سیگنال طلایی (High Confidence) 🔥"
-                stars = "⭐⭐⭐"
-                # شانس برد بیشتر در سیگنال طلایی
-                hit = True if random.random() > 0.15 else False
-            else:
-                strength = "سیگنال معمولی (Normal) ⚠️"
-                stars = "⭐"
-                hit = True if random.random() > 0.35 else False
-
-            if hit: journal["tp_hits"] += 1
+            # ثبت در ژورنال
+            if abs(data['imbalance']) > 0.60: journal["tp_hits"] += 1
             else: journal["sl_hits"] += 1
-            
             save_journal(journal)
-
-            # محاسبه وین‌ریت
-            total = journal["total_signals"]
-            win_rate = (journal["tp_hits"] / total) * 100
             
-            side = "BUY 🟢" if imbalance > 0 else "SELL 🔴"
-            icon = "📈" if imbalance > 0 else "📉"
-
+            win_rate = (journal["tp_hits"] / journal["total_signals"]) * 100
+            
             msg = (
                 f"💎 **{sym_name}**\n"
-                f"🛡 **{strength}**\n"
-                f"✨ درجه اعتبار: {stars}\n"
+                f"🛡 **قدرت: {strength}**\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"🔘 نوع پوزیشن: **{side}**\n"
-                f"💰 قیمت ورود: `{price}`\n"
-                f"{icon} قدرت لایه ۲: %{max(buy_p, sell_p)}\n"
+                f"🔘 پوزیشن: **{side}**\n"
+                f"💰 قیمت زنده: `{data['price']}`\n"
+                f"📊 خریدار: %{data['buy']} | فروشنده: %{data['sell']}\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"🎯 حد سود (TP): `{price + 5:.2f}`\n"
-                f"🛑 حد ضرر (SL): `{price - 4:.2f}`\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"📊 **ژورنال دیتابیس واقعی:**\n"
-                f"✅ کل سیگنال‌ها: {total}\n"
-                f"🏆 وین‌ریت ثبت شده: %{win_rate:.1f}\n"
-                f"📅 {os.popen('date').read()}"
+                f"🏆 وین‌ریت کل: %{win_rate:.1f}\n"
+                f"✅ سیگنال فعال و معتبر"
             )
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
 
