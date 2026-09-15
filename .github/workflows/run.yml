@@ -1,15 +1,15 @@
-name: Forex 24/7 Bot
+name: cTrader L2 Bot
 
 on:
   schedule:
-    - cron: '*/5 * * * 1-5' # اجرا هر ۵ دقیقه (دوشنبه تا جمعه - روزهای کاری بازار)
-  workflow_dispatch: # دکمه اجرای دستی
+    - cron: '*/5 * * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # اجازه نوشتن ژورنال در مخزن
+      contents: write
 
     steps:
       - name: Checkout Repository
@@ -24,15 +24,19 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run Trading Bot
+      - name: Run cTrader L2 Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_ACCOUNT_ID: ${{ secrets.CTRADER_ACCOUNT_ID }}
         run: python main.py
 
-      - name: Save Journal (Commit changes)
+      - name: Save Journal
         run: |
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add journal.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update trading journal" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update journal" && git push)
