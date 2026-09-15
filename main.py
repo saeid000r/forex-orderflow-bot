@@ -1,10 +1,10 @@
 import os
 import json
-import telebot
-import requests
 import time
+import requests
+import telebot
 
-# دریافت اطلاعات محرمانه از Secrets
+# ۱. کلیدها و توکن‌ها
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 ACCESS_TOKEN = os.getenv('CTRADER_ACCESS_TOKEN')
@@ -12,92 +12,96 @@ ACCOUNT_ID = os.getenv('CTRADER_ACCOUNT_ID')
 
 bot = telebot.TeleBot(TOKEN)
 
-# تنظیمات ۵ نماد اصلی همراه با تنظیمات TP/SL و اعشار
+# ۲. تنظیمات دقیق نمادها و حد سود/ضرر
 SYMBOLS = {
-    "XAUUSD": {"name": "طلا 🟡", "tp": 5.0, "sl": 3.0, "dec": 2},
-    "#US30": {"name": "داوجونز 🏦", "tp": 25.0, "sl": 15.0, "dec": 2},
-    "WTI": {"name": "نفت 🛢", "tp": 0.50, "sl": 0.30, "dec": 2},
-    "#USNDAQ100": {"name": "نزدک 💻", "tp": 20.0, "sl": 12.0, "dec": 2},
-    "EURUSD": {"name": "یورو/دلار 🇪🇺", "tp": 0.0030, "sl": 0.0020, "dec": 4}
+    "XAUUSD": {"name": "طلا (XAUUSD) 🟡", "tp": 5.0, "sl": 3.0, "dec": 2},
+    "#US30": {"name": "داوجونز (#US30) 🏦", "tp": 30.0, "sl": 20.0, "dec": 2},
+    "WTI": {"name": "نفت (WTI) 🛢", "tp": 0.50, "sl": 0.30, "dec": 2},
+    "#USNDAQ100": {"name": "نزدک (#USNDAQ100) 💻", "tp": 25.0, "sl": 15.0, "dec": 2},
+    "EURUSD": {"name": "یورو/دلار (EURUSD) 🇪🇺", "tp": 0.0030, "sl": 0.0020, "dec": 4}
 }
 
+# ۳. مدیریت دیتابیس ژورنال
 def load_journal():
     try:
-        with open("journal.json", "r") as f:
-            return json.load(f)
+        if os.path.exists("journal.json"):
+            with open("journal.json", "r", encoding="utf-8") as f:
+                return json.load(f)
     except Exception:
-        return {"total_signals": 0, "tp_hits": 0, "sl_hits": 0}
+        pass
+    return {"total_signals": 0, "tp_hits": 0, "sl_hits": 0}
 
 def save_journal(data):
     try:
-        with open("journal.json", "w") as f:
-            json.dump(data, f, indent=2)
+        with open("journal.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"Journal error: {e}")
 
-def get_ctrader_data(symbol_code):
-    try:
-        base = "https://sandbox-tradeapi.ctrader.com/v2"
-        # ۱. دریافت لیست نمادها
-        res = requests.get(f"{base}/symbols?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}", timeout=10).json()
-        
-        target_id = None
-        for s in res.get('symbol', []):
-            if s.get('symbolName') == symbol_code:
-                target_id = s.get('symbolId')
-                break
+# ۴. دریافت دیتای زنده با مدیریت خطای شبکه
+def get_symbol_data(symbol_code):
+    endpoints = [
+        "https://sandbox-tradeapi.ctrader.com/v2",
+        "https://live.ctraderapi.com/v2"
+    ]
+    for base in endpoints:
+        try:
+            sym_url = f"{base}/symbols?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}"
+            res = requests.get(sym_url, timeout=8).json()
+            symbols_list = res.get('symbol', [])
+            
+            target_id = None
+            for s in symbols_list:
+                if s.get('symbolName') == symbol_code:
+                    target_id = s.get('symbolId')
+                    break
+            
+            if not target_id:
+                continue
 
-        if not target_id:
-            return None
+            now_ms = int(time.time()) * 1000
+            from_ms = now_ms - 180000
+            bars_url = f"{base}/symbols/{target_id}/trendbars?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}&period=M1&from={from_ms}&to={now_ms}"
+            bar_res = requests.get(bars_url, timeout=8).json()
+            bars = bar_res.get('trendbar', [])
+            
+            if bars:
+                last_bar = bars[-1]
+                close_p = float(last_bar['close'])
+                high_p = float(last_bar['high'])
+                low_p = float(last_bar['low'])
+                
+                rng = (high_p - low_p) if high_p != low_p else 0.0001
+                bull_force = (close_p - low_p) / rng
+                bear_force = (high_p - close_p) / rng
+                imbalance = bull_force - bear_force
+                
+                return {
+                    "price": close_p,
+                    "imbalance": imbalance,
+                    "buy_p": int(bull_force * 100),
+                    "sell_p": int(bear_force * 100)
+                }
+        except Exception:
+            continue
+    return None
 
-        # ۲. دریافت آخرین کندل M1
-        now_ms = int(time.time()) * 1000
-        from_ms = now_ms - 180000
-        bars_res = requests.get(f"{base}/symbols/{target_id}/trendbars?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}&period=M1&from={from_ms}&to={now_ms}", timeout=10).json()
-
-        bars = bars_res.get('trendbar', [])
-        if not bars:
-            return None
-
-        bar = bars[-1]
-        price = float(bar['close'])
-        high = float(bar['high'])
-        low = float(bar['low'])
-        close = float(bar['close'])
-
-        rng = (high - low) if high != low else 0.0001
-        bull = (close - low) / rng
-        bear = (high - close) / rng
-        imbalance = bull - bear
-
-        return {
-            "price": price,
-            "imbalance": imbalance,
-            "buy_p": int(bull * 100),
-            "sell_p": int(bear * 100)
-        }
-    except Exception as e:
-        print(f"Error fetching {symbol_code}: {e}")
-        return None
-
+# ۵. اجرای اصلی
 def run_bot():
     journal = load_journal()
-    found_signal = False
     price_reports = []
-
-    # پیام شروع اسکن
-    bot.send_message(CHAT_ID, "🔎 <b>در حال اسکن ۵ دقیقه‌ای بازار cTrader...</b>", parse_mode="HTML")
+    found_signal = False
 
     for code, config in SYMBOLS.items():
-        data = get_ctrader_data(code)
+        data = get_symbol_data(code)
         if data:
-            p = data['price']
-            price_reports.append(f"• {config['name']}: <code>{p:.{config['dec']}f}</code>")
-            
+            price = data['price']
             imb = data['imbalance']
             abs_imb = abs(imb)
+            
+            price_reports.append(f"• {config['name']}: {price:.{config['dec']}f}")
 
-            # شرط صادر شدن سیگنال (شدت بالای ۴۰٪)
+            # شرط سیگنال (شدت بالای ۴۰٪)
             if abs_imb > 0.40:
                 found_signal = True
                 journal["total_signals"] += 1
@@ -112,45 +116,53 @@ def run_bot():
                 save_journal(journal)
 
                 total = journal["total_signals"]
-                win_rate = (journal["tp_hits"] / total) * 100 if total > 0 else 0
-                side = "BUY 🟢" if imb > 0 else "SELL 🔴"
+                tp_cnt = journal["tp_hits"]
+                sl_cnt = journal["sl_hits"]
+                win_rate = (tp_cnt / total) * 100 if total > 0 else 0.0
 
-                tp_price = p + config['tp'] if imb > 0 else p - config['tp']
-                sl_price = p - config['sl'] if imb > 0 else p + config['sl']
+                side = "BUY 🟢" if imb > 0 else "SELL 🔴"
+                
+                if imb > 0:
+                    tp_p = price + config['tp']
+                    sl_p = price - config['sl']
+                else:
+                    tp_p = price - config['tp']
+                    sl_p = price + config['sl']
 
                 msg = (
-                    f"🔔 <b>{strength}</b>\n"
-                    f"💎 نماد: <b>{config['name']}</b>\n"
+                    f"🔔 {strength}\n"
+                    f"💎 نماد: {config['name']}\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"🔘 جهت پوزیشن: <b>{side}</b>\n"
-                    f"💰 قیمت ورود: <code>{p:.{config['dec']}f}</code>\n"
-                    f"📊 خریدار: %{data['buy_p']} | فروشنده: %{data['sell_p']}\n"
+                    f"🔘 جهت پوزیشن: {side}\n"
+                    f"💰 قیمت ورود: {price:.{config['dec']}f}\n"
+                    f"📊 قدر خریدار: {data['buy_p']}% | فروشنده: {data['sell_p']}%\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"🎯 حد سود (TP): <code>{tp_price:.{config['dec']}f}</code>\n"
-                    f"🛑 حد ضرر (SL): <code>{sl_price:.{config['dec']}f}</code>\n"
+                    f"🎯 حد سود (TP): {tp_p:.{config['dec']}f}\n"
+                    f"🛑 حد ضرر (SL): {sl_p:.{config['dec']}f}\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"📊 <b>ژورنال دیتابیس:</b>\n"
+                    f"📊 ژورنال دیتابیس:\n"
                     f"✅ کل سیگنال‌ها: {total}\n"
-                    f"🏆 وین‌ریت کل: %{win_rate:.1f}"
+                    f"🎯 TP: {tp_cnt} | 🛑 SL: {sl_cnt}\n"
+                    f"🏆 وین‌ریت ثبت شده: %{win_rate:.1f}"
                 )
-                bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+                
+                bot.send_message(CHAT_ID, msg)
 
-    # اگر هیچ سیگنالی یافت نشد
     if not found_signal:
         if price_reports:
-            prices_str = "\n".join(price_reports)
-            msg = (
-                f"✅ <b>اسکن ۵ دقیقه‌ای تمام شد.</b>\n"
-                f"در این لحظه سیگنالی با شدت بالای ۴۰% یافت نشد.\n\n"
-                f"📈 <b>قیمت‌های زنده دریافتی:</b>\n"
-                f"{prices_str}"
+            prices_text = "\n".join(price_reports)
+            summary = (
+                "✅ اسکن ۵ دقیقه‌ای بازار انجام شد.\n"
+                "در این لحظه سیگنالی با شدت بالای ۴۰٪ یافت نشد.\n\n"
+                "📈 قیمت‌های زنده دریافت شده:\n"
+                f"{prices_text}"
             )
         else:
-            msg = (
-                f"✅ <b>اسکن ۵ دقیقه‌ای تمام شد.</b>\n\n"
-                f"⚠️ بازار در حال حاضر بسته است یا دیتایی از cTrader دریافت نشد."
+            summary = (
+                "✅ اسکن ۵ دقیقه‌ای بازار انجام شد.\n\n"
+                "⚠️ سرور cTrader دیتایی ارسال نکرد (احتمال تعطیلی بازار یا نیاز به Refresh Token)."
             )
-        bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+        bot.send_message(CHAT_ID, summary)
 
 if __name__ == "__main__":
     run_bot()
