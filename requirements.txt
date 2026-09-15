@@ -1,4 +1,2 @@
-python-telegram-bot
 requests
-pandas
-ctrader-open-api
+yfinance
