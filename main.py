@@ -4,26 +4,11 @@ import requests
 from twisted.internet import reactor
 from ctrader_open_api import Client, EndPoints, TcpProtocol
 
-# هندل کردن هوشمند ماژول‌های cTrader جهت جلوگیری از ModuleNotFoundError
-try:
-    from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
-    from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
-    from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
-    from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
-except (ImportError, ModuleNotFoundError):
-    try:
-        from ctrader_open_api.messages import (
-            ProtoOAApplicationAuthReq,
-            ProtoOAAccountAuthReq,
-            ProtoOASymbolsListReq,
-            ProtoOAGetDepthQuotesReq
-        )
-    except Exception:
-        import ctrader_open_api.messages as msg_mod
-        ProtoOAApplicationAuthReq = getattr(msg_mod, "ProtoOAApplicationAuthReq", None)
-        ProtoOAAccountAuthReq = getattr(msg_mod, "ProtoOAAccountAuthReq", None)
-        ProtoOASymbolsListReq = getattr(msg_mod, "ProtoOASymbolsListReq", None)
-        ProtoOAGetDepthQuotesReq = getattr(msg_mod, "ProtoOAGetDepthQuotesReq", None)
+# فراخوانی مستقیم ماژول‌های Protobuf cTrader
+from ctrader_open_api.messages.ProtoOAApplicationAuthReq_pb2 import ProtoOAApplicationAuthReq
+from ctrader_open_api.messages.ProtoOAAccountAuthReq_pb2 import ProtoOAAccountAuthReq
+from ctrader_open_api.messages.ProtoOASymbolsListReq_pb2 import ProtoOASymbolsListReq
+from ctrader_open_api.messages.ProtoOAGetDepthQuotesReq_pb2 import ProtoOAGetDepthQuotesReq
 
 # دریافت سکرت‌ها از گیت‌هاب
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -81,6 +66,7 @@ def process_and_finish():
         if not bids or not asks:
             continue
 
+        # محاسبه مجموع حجم سفارشات خرید و فروش در عمق بازار (Level 2)
         total_bid_vol = sum(b.volume for b in bids)
         total_ask_vol = sum(a.volume for a in asks)
         total_vol = total_bid_vol + total_ask_vol
@@ -92,7 +78,7 @@ def process_and_finish():
         mid_price = (top_bid + top_ask) / 2.0
         current_prices[sym_name] = mid_price
 
-        # محاسبه عدم تعادل لول ۲ سفارشات
+        # فرمول عدم تعادل واقعی Level 2
         imbalance = (total_bid_vol - total_ask_vol) / total_vol
 
         signal_type = None
@@ -133,6 +119,7 @@ def process_and_finish():
                 "imbalance": round(imbalance * 100, 1)
             })
 
+    # مدیریت پوزیشن‌های باز در ژورنال
     for sig in journal.get("active", []):
         sym = sig["symbol"]
         if sym not in current_prices:
@@ -159,6 +146,7 @@ def process_and_finish():
             else:
                 active_signals.append(sig)
 
+    # ارسال سیگنال جدید
     for sig in new_signals:
         is_dup = any(s["symbol"] == sig["symbol"] for s in active_signals)
         if is_dup: continue
@@ -187,7 +175,6 @@ def process_and_finish():
         reactor.stop()
 
 def on_connected(client):
-    print("Connected to cTrader Protobuf API...")
     req = ProtoOAApplicationAuthReq()
     req.clientId = CLIENT_ID
     req.clientSecret = CLIENT_SECRET
@@ -219,7 +206,6 @@ def on_symbols_list(response):
                 symbol_names[symbol.symbolId] = symbol.symbolName
 
     if not symbol_map:
-        print("No matching symbols found on cTrader.")
         process_and_finish()
         return
 
