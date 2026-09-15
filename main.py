@@ -1,168 +1,170 @@
 import os
 import json
-import time
 import requests
-import telebot
+import yfinance as yf
 
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
-ACCESS_TOKEN = os.getenv('CTRADER_ACCESS_TOKEN')
-ACCOUNT_ID = os.getenv('CTRADER_ACCOUNT_ID')
+# دریافت توکن‌های تلگرام از سکرت‌های گیت‌هاب
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+JOURNAL_FILE = "journal.json"
 
-bot = telebot.TeleBot(TOKEN)
-
+# اتصال دیتای جهانی به نام‌های دقیق بروکر cTrader شما
 SYMBOLS = {
-    "XAUUSD": {"name": "طلا (XAUUSD) 🟡", "keys": ["XAUUSD", "GOLD"], "tp": 5.0, "sl": 3.0, "dec": 2},
-    "#US30": {"name": "داوجونز (#US30) 🏦", "keys": ["#US30", "US30", "DJ30"], "tp": 25.0, "sl": 15.0, "dec": 2},
-    "WTI": {"name": "نفت (WTI) 🛢", "keys": ["WTI", "BRENT", "USOIL"], "tp": 0.50, "sl": 0.30, "dec": 2},
-    "#USNDAQ100": {"name": "نزدک (#USNDAQ100) 💻", "keys": ["#USNDAQ100", "USNDAQ100", "NASDAQ"], "tp": 20.0, "sl": 12.0, "dec": 2},
-    "EURUSD": {"name": "یورو/دلار (EURUSD) 🇪🇺", "keys": ["EURUSD"], "tp": 0.0030, "sl": 0.0020, "dec": 4}
+    "XAUUSD=X": "XAUUSD",
+    "^DJI": "#US30",
+    "BZ=F": "BRENT",
+    "^NDX": "#USNDAQ100",
+    "EURUSD=X": "EURUSD"
 }
 
-def load_journal():
+def send_telegram(text):
+    """ارسال پیام به تلگرام با فرمت HTML برای جلوگیری از ارور هشتگ"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        if os.path.exists("journal.json"):
-            with open("journal.json", "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception: pass
-    return {"total_signals": 0, "tp_hits": 0, "sl_hits": 0}
+        requests.post(url, data=payload, timeout=10)
+    except:
+        pass
+
+def load_journal():
+    if os.path.exists(JOURNAL_FILE):
+        with open(JOURNAL_FILE, "r") as f:
+            return json.load(f)
+    return {"total": 0, "tp": 0, "sl": 0, "active": []}
 
 def save_journal(data):
-    try:
-        with open("journal.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception: pass
+    with open(JOURNAL_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-def fetch_symbol_data(symbol_config):
-    # آدرس‌های دقیق و صحیح REST API سی‌تریدر
-    endpoints = [
-        "https://tradeapi.ctrader.com/v2",
-        "https://sandbox-tradeapi.ctrader.com/v2"
-    ]
-    
-    for base in endpoints:
+def main():
+    journal = load_journal()
+    new_signals = []
+    active_signals = []
+    current_prices = {}
+
+    # ۱. دریافت دیتای لحظه‌ای و محاسبه استراتژی
+    for ticker, ctrader_name in SYMBOLS.items():
         try:
-            sym_url = f"{base}/symbols?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}"
-            res = requests.get(sym_url, timeout=5).json()
-            
-            if "symbol" not in res:
+            # دریافت کندل‌های 5 دقیقه‌ای
+            df = yf.Ticker(ticker).history(period="1d", interval="5m")
+            if df.empty or len(df) < 2: 
                 continue
-                
-            target_id = None
-            for s in res['symbol']:
-                s_name = s.get('symbolName', '').upper()
-                for k in symbol_config['keys']:
-                    if k.upper() in s_name:
-                        target_id = s.get('symbolId')
-                        break
-                if target_id: break
-                
-            if not target_id: continue
-
-            now_ms = int(time.time()) * 1000
-            from_ms = now_ms - 3600000
             
-            bars_url = f"{base}/symbols/{target_id}/trendbars?oauth_token={ACCESS_TOKEN}&accountId={ACCOUNT_ID}&period=M1&from={from_ms}&to={now_ms}"
-            bars_res = requests.get(bars_url, timeout=5).json()
+            last_closed = df.iloc[-2] # آخرین کندل کامل بسته شده
+            current_price = df.iloc[-1]['Close'] # قیمت دقیق همین لحظه
             
-            bars = bars_res.get('trendbar', [])
-            if not bars: continue
+            high = last_closed['High']
+            low = last_closed['Low']
+            close = last_closed['Close']
+            
+            current_prices[ctrader_name] = current_price
+            
+            if high - low == 0: continue
+            
+            # محاسبه فرمول Order Flow Imbalance (اوردر فلو)
+            bull_power = close - low
+            bear_power = high - close
+            range_hl = high - low
+            imbalance = (bull_power / range_hl) - (bear_power / range_hl)
+            
+            signal_type = None
+            strength = ""
+            
+            # شرایط سیگنال (40% نرمال - 60% طلایی)
+            if imbalance >= 0.60:
+                signal_type = "BUY"
+                strength = "🔥 <b>Golden</b> 🔥"
+            elif imbalance >= 0.40:
+                signal_type = "BUY"
+                strength = "🟢 <b>Normal</b>"
+            elif imbalance <= -0.60:
+                signal_type = "SELL"
+                strength = "🔥 <b>Golden</b> 🔥"
+            elif imbalance <= -0.40:
+                signal_type = "SELL"
+                strength = "🔴 <b>Normal</b>"
 
-            last_bar = bars[-1]
-            low_p = float(last_bar.get('low', 0))
-            close_p = float(last_bar.get('close', low_p + float(last_bar.get('deltaClose', 0))))
-            high_p = float(last_bar.get('high', low_p + float(last_bar.get('deltaHigh', 0))))
+            if signal_type:
+                # محاسبه حد سود و ضرر بر اساس نوسان کندل
+                atr = range_hl
+                if atr == 0: atr = current_price * 0.001
+                
+                entry = current_price
+                if signal_type == "BUY":
+                    tp = entry + (atr * 2.5)
+                    sl = entry - (atr * 1.5)
+                else:
+                    tp = entry - (atr * 2.5)
+                    sl = entry + (atr * 1.5)
+                    
+                new_signals.append({
+                    "symbol": ctrader_name,
+                    "type": signal_type,
+                    "strength": strength,
+                    "entry": round(entry, 4),
+                    "tp": round(tp, 4),
+                    "sl": round(sl, 4)
+                })
 
-            if close_p > 100000 and "EUR" in symbol_config['keys'][0]:
-                close_p /= 100000.0
-                high_p /= 100000.0
-                low_p /= 100000.0
+        except Exception as e:
+            print(f"Error on {ctrader_name}: {e}")
 
-            rng = (high_p - low_p) if high_p != low_p else 0.0001
-            bull = (close_p - low_p) / rng
-            bear = (high_p - close_p) / rng
-            imbalance = bull - bear
-
-            return {
-                "price": close_p,
-                "imbalance": imbalance,
-                "buy_p": int(bull * 100),
-                "sell_p": int(bear * 100)
-            }
-        except Exception:
+    # ۲. بررسی سیگنال‌های باز قبلی (آیا تی‌پی یا استاپ خورده‌اند؟)
+    for sig in journal["active"]:
+        sym = sig["symbol"]
+        if sym not in current_prices:
+            active_signals.append(sig)
             continue
             
-    return None
+        cp = current_prices[sym]
+        if sig["type"] == "BUY":
+            if cp >= sig["tp"]:
+                journal["tp"] += 1
+                send_telegram(f"✅ <b>TP HIT! (سود شد)</b>\nSymbol: {sym} (BUY)\nPrice: {cp}")
+            elif cp <= sig["sl"]:
+                journal["sl"] += 1
+                send_telegram(f"❌ <b>SL HIT! (ضرر شد)</b>\nSymbol: {sym} (BUY)\nPrice: {cp}")
+            else:
+                active_signals.append(sig)
+        else: # SELL
+            if cp <= sig["tp"]:
+                journal["tp"] += 1
+                send_telegram(f"✅ <b>TP HIT! (سود شد)</b>\nSymbol: {sym} (SELL)\nPrice: {cp}")
+            elif cp >= sig["sl"]:
+                journal["sl"] += 1
+                send_telegram(f"❌ <b>SL HIT! (ضرر شد)</b>\nSymbol: {sym} (SELL)\nPrice: {cp}")
+            else:
+                active_signals.append(sig)
 
-def run_bot():
-    journal = load_journal()
-    price_reports = []
-    found_signal = False
+    # ۳. ارسال سیگنال‌های جدید و محاسبه وین‌ریت
+    for sig in new_signals:
+        # جلوگیری از ارسال سیگنال تکراری برای یک ارز
+        is_duplicate = any(s["symbol"] == sig["symbol"] for s in active_signals)
+        if is_duplicate: continue
 
-    for code, config in SYMBOLS.items():
-        data = fetch_symbol_data(config)
+        active_signals.append(sig)
+        journal["total"] += 1
         
-        if data:
-            p = data['price']
-            imb = data['imbalance']
-            abs_imb = abs(imb)
+        # محاسبه دقیق وین ریت
+        wr = 0
+        closed_trades = journal["tp"] + journal["sl"]
+        if closed_trades > 0:
+            wr = (journal["tp"] / closed_trades) * 100
             
-            price_reports.append(f"• {config['name']}: {p:.{config['dec']}f}")
+        msg = f"{sig['strength']} SIGNAL\n\n"
+        msg += f"Symbol: <b>{sig['symbol']}</b>\n"
+        msg += f"Action: <b>{sig['type']}</b>\n"
+        msg += f"Entry: <code>{sig['entry']}</code>\n"
+        msg += f"TP: <code>{sig['tp']}</code>\n"
+        msg += f"SL: <code>{sig['sl']}</code>\n\n"
+        msg += f"📊 Win Rate: <b>{wr:.1f}%</b> (Trades: {closed_trades})"
+        
+        send_telegram(msg)
 
-            if abs_imb > 0.40:
-                found_signal = True
-                journal["total_signals"] += 1
-
-                if abs_imb > 0.60:
-                    strength = "سیگنال طلایی 🔥⭐⭐⭐"
-                    journal["tp_hits"] += 1
-                else:
-                    strength = "سیگنال معمولی ⚠️⭐"
-                    journal["sl_hits"] += 1
-
-                save_journal(journal)
-
-                total = journal["total_signals"]
-                tp_cnt = journal["tp_hits"]
-                sl_cnt = journal["sl_hits"]
-                win_rate = (tp_cnt / total) * 100 if total > 0 else 0.0
-
-                side = "BUY 🟢" if imb > 0 else "SELL 🔴"
-                tp_p = p + config['tp'] if imb > 0 else p - config['tp']
-                sl_p = p - config['sl'] if imb > 0 else p + config['sl']
-
-                msg = (
-                    f"🔔 {strength}\n"
-                    f"💎 نماد: {config['name']}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"🔘 جهت پوزیشن: {side}\n"
-                    f"💰 قیمت ورود: {p:.{config['dec']}f}\n"
-                    f"📊 خریدار: %{data['buy_p']} | فروشنده: %{data['sell_p']}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"🎯 حد سود (TP): {tp_p:.{config['dec']}f}\n"
-                    f"🛑 حد ضرر (SL): {sl_p:.{config['dec']}f}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"📊 ژورنال دیتابیس واقعی:\n"
-                    f"✅ کل سیگنال‌ها: {total}\n"
-                    f"🎯 تعداد TP: {tp_cnt} | 🛑 تعداد SL: {sl_cnt}\n"
-                    f"🏆 وین‌ریت ثبت شده: %{win_rate:.1f}"
-                )
-                bot.send_message(CHAT_ID, msg)
-
-    if not found_signal:
-        if price_reports:
-            summary = (
-                "✅ اسکن ۵ دقیقه‌ای انجام شد.\n"
-                "در این لحظه سیگنالی با شدت بالای ۴۰٪ یافت نشد.\n\n"
-                "📈 قیمت‌های زنده دریافت شده از cTrader:\n" +
-                "\n".join(price_reports)
-            )
-        else:
-            summary = (
-                "✅ اسکن ۵ دقیقه‌ای انجام شد.\n\n"
-                "⚠️ دیتایی دریافت نشد. مطمئن شوید CTRADER_ACCOUNT_ID و CTRADER_ACCESS_TOKEN درست وارد شده‌اند."
-            )
-        bot.send_message(CHAT_ID, summary)
+    # ۴. ذخیره وضعیت جدید در فایل
+    journal["active"] = active_signals
+    save_journal(journal)
+    print("Scan completed successfully.")
 
 if __name__ == "__main__":
-    run_bot()
+    main()
