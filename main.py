@@ -19,6 +19,7 @@ cTrader Level-2 Order-Flow Bot — نسخه اصلاح‌شده (سازگار ب
      digits فقط تعداد ارقام اعشار نمایشی است، نه مقیاس!
   6) نسخه ۲ (فیکس پایداری): رفرش توکن فقط روی ارورهای واقعاً مربوط به توکن انجام می‌شود
      (رفرش بی‌جا توکن سالم را باطل می‌کرد!) + پیام تمدید شامل هر دو توکن + ضداسپم پیام خطا.
+  7) نسخه ۳ (عیب‌یابی): موقع خطای احراز هویت، لیست حساب‌های قابل‌دسترس با توکن در لاگ چاپ می‌شود.
 """
 
 import os
@@ -30,7 +31,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from twisted.internet import reactor, threads
+from twisted.internet import reactor, threads, defer
 from ctrader_open_api import Client, TcpProtocol
 from ctrader_open_api.protobuf import Protobuf
 from ctrader_open_api.messages import OpenApiMessages_pb2 as Msg
@@ -199,6 +200,12 @@ def is_token_error(fail):
     return any(h in msg for h in hints)
 
 
+def is_auth_error(err_text):
+    """آیا این خطا از جنس احراز هویت است؟ (برای اجرای عیب‌یابی حساب‌ها)"""
+    t = (err_text or "").lower()
+    return any(k in t for k in ("auth", "token", "account", "disabled", "forbidden", "denied"))
+
+
 def should_send_error(journal, err_text):
     """ضداسپم: ارور تکراری فقط بعد از cooldown دوباره به تلگرام ارسال می‌شود."""
     now = time.time()
@@ -256,6 +263,63 @@ def on_message_received(client_obj, message):
 
 def on_disconnected(client_obj, reason):
     log(f"⚠️ Disconnected: {reason} (تلاش مجدد خودکار انجام می‌شود)")
+
+
+def handle_account_list(res):
+    """لاگ کردن لیست حساب‌های قابل‌دسترس با توکن فعلی (عیب‌یابی). هیچ‌وقت exception نمی‌دهد."""
+    try:
+        res = check_not_error(res)
+    except Exception as e:
+        log(f"🔍 گرفتن لیست حساب‌ها ناموفق بود: {e}")
+        return
+    try:
+        accs = list(res.ctidTraderAccount)
+    except Exception as e:
+        log(f"🔍 پاسخ لیست حساب‌ها غیرمنتظره بود: {e}")
+        return
+    scope = getattr(res, "permissionScope", "")
+    log(f"🔍 دسترسی توکن (scope): {scope or '—'}")
+    if not accs:
+        log("🔍 این توکن به هیچ حساب معاملاتی دسترسی ندارد! توکن را با authorize درست بگیرید.")
+        return
+    log(f"🔍 حساب‌های قابل‌دسترس با این توکن ({len(accs)}):")
+    found = False
+    for a in accs:
+        try:
+            aid = a.ctidTraderAccountId
+            if aid == ACCOUNT_ID:
+                found = True
+                mark = "✅ ← همین حساب بات"
+            else:
+                mark = ""
+            log(f"   • ID={aid} login={a.traderLogin} live={a.isLive} {mark}")
+        except Exception:
+            continue
+    if not found:
+        log(f"🔍 حساب بات (ID={ACCOUNT_ID}) در این لیست نیست! ID سکرت اشتباه است یا توکن به آن دسترسی ندارد.")
+
+
+def try_diagnose_accounts():
+    """گرفتن لیست حساب‌های توکن برای عیب‌یابی. همیشه با None تمام می‌شود."""
+    log("🔍 در حال گرفتن لیست حساب‌های قابل‌دسترس با این توکن...")
+    try:
+        req = Msg.ProtoOAGetAccountListByAccessTokenReq()
+        req.accessToken = ACCESS_TOKEN_HOLDER["value"]
+        d = api_send(req, timeout=8)
+    except Exception as e:
+        log(f"🔍 امکان ارسال درخواست عیب‌یابی نیست: {e}")
+        return defer.succeed(None)
+
+    def on_res(res):
+        handle_account_list(res)
+        return None
+
+    def on_err(f):
+        log(f"🔍 گرفتن لیست حساب‌ها ناموفق بود: {f.getErrorMessage()}")
+        return None
+
+    d.addCallbacks(on_res, on_err)
+    return d
 
 
 def send_app_auth():
@@ -553,13 +617,23 @@ def finish():
 
 
 def on_fatal(fail):
-    global finished, exit_code
+    global finished
     if finished:
         return
     finished = True
-    exit_code = 1
     err = fail.getErrorMessage()
     log(f"❌ اجرای بات ناموفق بود: {err}\n{fail.getTraceback()}")
+    if is_auth_error(err):
+        # قبل از پایان، لیست حساب‌های قابل‌دسترس را برای عیب‌یابی می‌گیریم
+        d = try_diagnose_accounts()
+        d.addBoth(lambda _: finish_fatal(err))
+    else:
+        finish_fatal(err)
+
+
+def finish_fatal(err):
+    global exit_code
+    exit_code = 1
     journal = load_journal()
     try:
         if should_send_error(journal, err):
@@ -581,6 +655,7 @@ def on_fatal(fail):
         reactor.stop()
     except Exception:
         pass
+    return None
 
 
 def failsafe():
