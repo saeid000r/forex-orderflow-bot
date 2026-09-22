@@ -24,7 +24,7 @@
             "time": "2026-09-21 20:59 UTC"
         }
     ],
-    "updated": "2026-09-22 03:31 UTC",
+    "updated": "2026-09-22 03:43 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
