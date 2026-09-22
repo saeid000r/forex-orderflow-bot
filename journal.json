@@ -1,7 +1,7 @@
 {
     "total": 2,
     "tp": 0,
-    "sl": 0,
+    "sl": 1,
     "active": [
         {
             "symbol": "EURUSD",
@@ -12,19 +12,9 @@
             "decimals": 5,
             "imbalance": 52.8,
             "time": "2026-09-21 20:33 UTC"
-        },
-        {
-            "symbol": "US30",
-            "type": "SELL",
-            "entry": 52102.95,
-            "tp": 51998.74,
-            "sl": 52155.05,
-            "decimals": 2,
-            "imbalance": -82.4,
-            "time": "2026-09-21 20:59 UTC"
         }
     ],
-    "updated": "2026-09-22 05:46 UTC",
+    "updated": "2026-09-22 05:54 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
