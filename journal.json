@@ -3,7 +3,7 @@
     "tp": 1,
     "sl": 3,
     "active": [],
-    "updated": "2026-09-24 13:26 UTC",
+    "updated": "2026-09-24 13:40 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
