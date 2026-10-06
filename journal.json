@@ -1,20 +1,9 @@
 {
     "total": 19,
     "tp": 7,
-    "sl": 11,
-    "active": [
-        {
-            "symbol": "XAUUSD",
-            "type": "SELL",
-            "entry": 4163.95,
-            "tp": 4155.62,
-            "sl": 4168.11,
-            "decimals": 2,
-            "imbalance": -44.8,
-            "time": "2026-10-06 20:30 UTC"
-        }
-    ],
-    "updated": "2026-10-06 23:14 UTC",
+    "sl": 12,
+    "active": [],
+    "updated": "2026-10-06 23:29 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
