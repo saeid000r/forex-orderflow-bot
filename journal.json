@@ -1,20 +1,9 @@
 {
     "total": 23,
-    "tp": 10,
+    "tp": 11,
     "sl": 12,
-    "active": [
-        {
-            "symbol": "US30",
-            "type": "BUY",
-            "entry": 51266.95,
-            "tp": 51369.48,
-            "sl": 51215.68,
-            "decimals": 2,
-            "imbalance": 61.2,
-            "time": "2026-10-08 20:39 UTC"
-        }
-    ],
-    "updated": "2026-10-09 08:33 UTC",
+    "active": [],
+    "updated": "2026-10-09 08:52 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
