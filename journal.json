@@ -1,20 +1,9 @@
 {
     "total": 27,
-    "tp": 13,
+    "tp": 14,
     "sl": 13,
-    "active": [
-        {
-            "symbol": "USNDAQ100",
-            "type": "BUY",
-            "entry": 29199.15,
-            "tp": 29257.55,
-            "sl": 29169.95,
-            "decimals": 2,
-            "imbalance": 42.1,
-            "time": "2026-10-16 20:50 UTC"
-        }
-    ],
-    "updated": "2026-10-17 01:15 UTC",
+    "active": [],
+    "updated": "2026-10-19 02:32 UTC",
     "last_error_ts": 1789840188.1546907,
     "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
 }
