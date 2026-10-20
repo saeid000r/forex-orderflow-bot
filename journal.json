@@ -4,6 +4,6 @@
     "sl": 13,
     "active": [],
     "updated": "2026-10-20 08:05 UTC",
-    "last_error_ts": 1789840188.1546907,
-    "last_error_text": "cTrader ProtoOAErrorRes: code=RET_ACCOUNT_DISABLED desc=Authentication failed"
+    "last_error_ts": 1792503081.052338,
+    "last_error_text": "cTrader ProtoOAErrorRes: code=CH_ACCESS_TOKEN_INVALID desc=Invalid access token"
 }
