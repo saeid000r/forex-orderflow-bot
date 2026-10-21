@@ -4,6 +4,6 @@
     "sl": 13,
     "active": [],
     "updated": "2026-10-20 08:05 UTC",
-    "last_error_ts": 1792557155.4274905,
+    "last_error_ts": 1792575156.1105444,
     "last_error_text": "cTrader ProtoOAErrorRes: code=CH_ACCESS_TOKEN_INVALID desc=Invalid access token"
 }
